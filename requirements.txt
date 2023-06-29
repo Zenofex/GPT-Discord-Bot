@@ -1,0 +1,6 @@
+discord
+openai
+tiktoken
+python-dotenv
+aiofiles
+aiohttp

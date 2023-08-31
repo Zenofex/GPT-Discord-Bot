@@ -1,6 +1,6 @@
 discord
 openai
+aiosqlite
 tiktoken
 python-dotenv
-aiofiles
 aiohttp

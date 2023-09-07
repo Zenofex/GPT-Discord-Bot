@@ -5,6 +5,9 @@ import openai
 import asyncio
 import aiosqlite
 import traceback
+import warnings
+import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
+from stability_sdk import client as stability_client
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -16,6 +19,13 @@ import sys
 load_dotenv()
 openai.api_key = os.getenv('OPENAI_API_KEY')
 discord_token = os.getenv('DISCORD_TOKEN')
+
+# Set up our connection to the API.
+stability_api = stability_client.StabilityInference(
+    key=os.getenv('STABILITY_KEY'),  # API Key reference.
+    verbose=True,  # Print debug messages.
+    engine="stable-diffusion-xl-1024-v1-0",  # Set the engine to use for generation.
+)
 
 bot_role = os.getenv('BOT_ROLE')
 if bot_role is None:
@@ -118,6 +128,25 @@ async def add_context(message_ctx, message):
     print("[I] Dumping messsage_list_dict: ", message_list_dict)
     return message_list
 
+async def query_stable_diffusion(prompt, sleep_time=90, variations=1, size="1024x1024"):
+    try:
+        print("[I] Sending Stable Diffusion prompt: ", prompt)
+
+        answers = stability_api.generate(
+            prompt=prompt,
+            steps=50,  # Amount of inference steps performed on image generation. Defaults to 30.
+            cfg_scale=8.0,  # Influences how strongly your generation is guided to match your prompt.
+            width=1024,  # Generation width, if not included defaults to 512 or 1024 depending on the engine.
+            height=1024,  # Generation height, if not included defaults to 512 or 1024 depending on the engine.
+            samples=variations,  # Number of images to generate.
+            sampler=generation.SAMPLER_K_DPMPP_2M,  # Choose the sampler for denoising.
+        )
+
+        return answers
+    except Exception as e:
+        print('[E]', traceback.format_exc())
+        sys.exit(1)
+
 async def query_dalle(prompt, message_ctx=None, sleep_time=90, variations=1, size="1024x1024"):
     try:
         async with aiohttp.ClientSession() as session:
@@ -150,6 +179,7 @@ async def query_dalle(prompt, message_ctx=None, sleep_time=90, variations=1, siz
         resp = await query_dalle(prompt, message_ctx)
         if resp is not None:
             return resp
+
 
 async def query_chatgpt(messages, message_ctx=None, sleep_time=90):
     try:
@@ -202,8 +232,25 @@ async def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
         raise NotImplementedError(f"""num_tokens_from_messages() is not presently implemented for model {model}.
 See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.""")
 
+async def sd_file_from_answers(answers):
+    """Returns a list of discord file objects from a sd response."""
+    try:
+        dfo_list = []
+        for resp in answers:
+            for artifact in resp.artifacts:
+                if artifact.finish_reason == generation.FILTER:
+                    warnings.warn(
+                        "Your request activated the API's safety filters and could not be processed."
+                        "Please modify the prompt and try again.")
+                if artifact.type == generation.ARTIFACT_IMAGE:
+                    data = io.BytesIO(artifact.binary)
+                    dfo_list.append(discord.File(data, f"stablediff-{artifact.seed}.png"))
+        return dfo_list
+    except Exception as e:
+        print('[E]', traceback.format_exc())
+        return []
 
-async def discord_file_from_url(url_list):
+async def dalle_file_from_url(url_list):
     """Returns a list of discord file objects from a list of urls."""
     try:
         dfo_list = []
@@ -241,7 +288,13 @@ async def generate_response(prompt, messages, message_ctx):
             prompt = prompt[7:].lstrip()
             await send_channel_msg(message_ctx, "Received Image command, generating images for prompt.")
             images = await query_dalle(prompt, message_ctx)
-            dfo_list = await discord_file_from_url(images)  
+            dfo_list = await dalle_file_from_url(images)  
+            return dfo_list
+        elif prompt.startswith("!sdimage"):
+            prompt = prompt[7:].lstrip()
+            await send_channel_msg(message_ctx, "Received Image command, generating stable-diffusion images for prompt.")
+            answer = await query_stable_diffusion(prompt)
+            dfo_list = await sd_file_from_answers(answer)  
             return dfo_list
         elif prompt.startswith("!code"):
             prompt = prompt[5:].lstrip()

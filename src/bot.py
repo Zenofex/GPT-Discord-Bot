@@ -82,7 +82,7 @@ async def write_summary_to_disk(thread_channel, summary):
 
     async with aiosqlite.connect(summary_file_loc, timeout=10) as conn:
         cursor = await conn.cursor()
-        await cursor.execute("INSERT INTO contexts (channel_id, context) VALUES (?, ?)", (thread_channel, ""))
+        await cursor.execute("INSERT OR REPLACE INTO contexts (channel_id, context) VALUES (?, ?)", (thread_channel, summary))
         await conn.commit()
 
 async def create_database(db_path):

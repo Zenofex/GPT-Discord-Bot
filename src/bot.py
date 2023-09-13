@@ -150,9 +150,12 @@ async def format_multiprompt(prompt):
     multiprompt = []
     delimiter = "|"
     raw_multiprompt = prompt.split(delimiter)
-    for subprompt in raw_multiprompt:
-        # TODO: implement weighting, update generation.Prompt args with weighting.
-        multiprompt.append(generation.Prompt(text=subprompt)) # weight is defaulting to 1
+    for index, subprompt in enumerate(raw_multiprompt):
+        if index == 0:
+            weight = 1
+        else:
+            weight = -1
+        multiprompt.append(generation.Prompt(text=subprompt,parameters=generation.PromptParameters(weight=weight)))
     return multiprompt
 
 async def query_dalle(prompt, message_ctx=None, sleep_time=90, variations=1, size="1024x1024"):

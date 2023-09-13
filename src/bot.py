@@ -293,6 +293,12 @@ async def generate_response(prompt, messages, message_ctx):
             answer = await query_stable_diffusion(prompt)
             dfo_list = await sd_file_from_answers(answer, message_ctx)  
             return dfo_list
+        elif prompt.startswith("!sdimagetest"):
+            prompt = prompt[12:].lstrip()
+            await send_channel_msg(message_ctx, "Received Advanced SDImage command, generating stable-diffusion images for prompt.")
+            answer = await query_stable_diffusion(prompt)
+            dfo_list = await sd_file_from_answers(answer, message_ctx)  
+            return dfo_list
         elif prompt.startswith("!code"):
             prompt = prompt[5:].lstrip()
             await send_channel_msg(message_ctx, "Received code command, sending request with prompt to disable safeguards and RFC for long messages (this command does not keep context).")

@@ -289,7 +289,7 @@ async def generate_response(prompt, messages, message_ctx):
             return dfo_list
         elif prompt.startswith("!sdimage"):
             prompt = prompt[8:].lstrip()
-            await send_channel_msg(message_ctx, "Received Image command, generating stable-diffusion images for prompt.")
+            await send_channel_msg(message_ctx, "Received SDImage command, generating stable-diffusion images for prompt.")
             answer = await query_stable_diffusion(prompt)
             dfo_list = await sd_file_from_answers(answer, message_ctx)  
             return dfo_list

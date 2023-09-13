@@ -282,7 +282,7 @@ async def generate_response(prompt, messages, message_ctx):
             await add_context(message_ctx, {"role": "assistant", "content": prompt})
             return None
         elif prompt.startswith("!image"):
-            prompt = prompt[7:].lstrip()
+            prompt = prompt[6:].lstrip()
             await send_channel_msg(message_ctx, "Received Image command, generating images for prompt.")
             images = await query_dalle(prompt, message_ctx)
             dfo_list = await dalle_file_from_url(images)  

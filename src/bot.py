@@ -146,6 +146,15 @@ async def query_stable_diffusion(prompt, sleep_time=90, variations=1, size="1024
         print('[E]', traceback.format_exc())
         sys.exit(1)
 
+async def format_multiprompt(prompt):
+    multiprompt = []
+    delimiter = "|"
+    raw_multiprompt = prompt.split(delimiter)
+    for subprompt in raw_multiprompt:
+        # TODO: implement weighting, update generation.Prompt args with weighting.
+        multiprompt.append(generation.Prompt(text=subprompt)) # weight is defaulting to 1
+    return multiprompt
+
 async def query_dalle(prompt, message_ctx=None, sleep_time=90, variations=1, size="1024x1024"):
     try:
         async with aiohttp.ClientSession() as session:
@@ -295,6 +304,7 @@ async def generate_response(prompt, messages, message_ctx):
             return dfo_list
         elif prompt.startswith("!sdimagetest"):
             prompt = prompt[12:].lstrip()
+            prompt = format_multiprompt(prompt)
             await send_channel_msg(message_ctx, "Received Advanced SDImage command, generating stable-diffusion images for prompt.")
             answer = await query_stable_diffusion(prompt)
             dfo_list = await sd_file_from_answers(answer, message_ctx)  

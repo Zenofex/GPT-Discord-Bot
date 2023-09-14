@@ -299,16 +299,16 @@ async def generate_response(prompt, messages, message_ctx):
             images = await query_dalle(prompt, message_ctx)
             dfo_list = await dalle_file_from_url(images)  
             return dfo_list
-        elif prompt.startswith("!sdimage"):
-            prompt = prompt[8:].lstrip()
-            await send_channel_msg(message_ctx, "Received SDImage command, generating stable-diffusion images for prompt.")
+        elif prompt.startswith("!sdimageadv"):
+            prompt = prompt[11:].lstrip()
+            prompt = await format_multiprompt(prompt)
+            await send_channel_msg(message_ctx, "Received Advanced SDImage command, generating stable-diffusion images for prompt.")
             answer = await query_stable_diffusion(prompt)
             dfo_list = await sd_file_from_answers(answer, message_ctx)  
             return dfo_list
-        elif prompt.startswith("!sdimagetest"):
-            prompt = prompt[12:].lstrip()
-            prompt = format_multiprompt(prompt)
-            await send_channel_msg(message_ctx, "Received Advanced SDImage command, generating stable-diffusion images for prompt.")
+        elif prompt.startswith("!sdimage"):
+            prompt = prompt[8:].lstrip()
+            await send_channel_msg(message_ctx, "Received SDImage command, generating stable-diffusion images for prompt.")
             answer = await query_stable_diffusion(prompt)
             dfo_list = await sd_file_from_answers(answer, message_ctx)  
             return dfo_list

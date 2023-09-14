@@ -146,6 +146,18 @@ async def query_stable_diffusion(prompt, sleep_time=90, variations=1, size="1024
         print('[E]', traceback.format_exc())
         sys.exit(1)
 
+async def format_multiprompt(prompt):
+    multiprompt = []
+    delimiter = "|"
+    raw_multiprompt = prompt.split(delimiter)
+    for index, subprompt in enumerate(raw_multiprompt):
+        if index == 0:
+            weight = 1
+        else:
+            weight = -1
+        multiprompt.append(generation.Prompt(text=subprompt,parameters=generation.PromptParameters(weight=weight)))
+    return multiprompt
+
 async def query_dalle(prompt, message_ctx=None, sleep_time=90, variations=1, size="1024x1024"):
     try:
         async with aiohttp.ClientSession() as session:
@@ -282,14 +294,21 @@ async def generate_response(prompt, messages, message_ctx):
             await add_context(message_ctx, {"role": "assistant", "content": prompt})
             return None
         elif prompt.startswith("!image"):
-            prompt = prompt[7:].lstrip()
+            prompt = prompt[6:].lstrip()
             await send_channel_msg(message_ctx, "Received Image command, generating images for prompt.")
             images = await query_dalle(prompt, message_ctx)
             dfo_list = await dalle_file_from_url(images)  
             return dfo_list
         elif prompt.startswith("!sdimage"):
-            prompt = prompt[7:].lstrip()
-            await send_channel_msg(message_ctx, "Received Image command, generating stable-diffusion images for prompt.")
+            prompt = prompt[8:].lstrip()
+            await send_channel_msg(message_ctx, "Received SDImage command, generating stable-diffusion images for prompt.")
+            answer = await query_stable_diffusion(prompt)
+            dfo_list = await sd_file_from_answers(answer, message_ctx)  
+            return dfo_list
+        elif prompt.startswith("!sdimagetest"):
+            prompt = prompt[12:].lstrip()
+            prompt = format_multiprompt(prompt)
+            await send_channel_msg(message_ctx, "Received Advanced SDImage command, generating stable-diffusion images for prompt.")
             answer = await query_stable_diffusion(prompt)
             dfo_list = await sd_file_from_answers(answer, message_ctx)  
             return dfo_list

@@ -248,12 +248,12 @@ async def format_multiprompt(prompt):
     
     return multiprompt
 
-async def query_dalle(prompt, message_ctx=None, sleep_time=90, variations=1, size="1024x1024"):
+async def query_dalle(prompt, message_ctx=None, model='dall-e-3', sleep_time=90, variations=1, size="1024x1024"):
     try:
         async with aiohttp.ClientSession() as session:
             openai.aiosession.set(session)
             print("[I] Sending DALL-E prompt: ", prompt)
-            response = await openai.Image.acreate(prompt=prompt, n=variations, size=size)
+            response = await openai.Image.acreate(model=model, prompt=prompt, n=variations, size=size)
             print("[I] Received DALL-E Response: ", response)
             #await openai.aiosession.get().close()
         if 'data' not in response or len(response['data']) <= 0:
@@ -277,16 +277,17 @@ async def query_dalle(prompt, message_ctx=None, sleep_time=90, variations=1, siz
         asyncio.sleep(sleep_time)
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "I'm going to take a %s second nap, then I'll try to answer that again." % sleep_time)
-        resp = await query_dalle(prompt, message_ctx)
+        resp = await query_dalle(prompt, message_ctx, model=model, variations=variations)
         if resp is not None:
             return resp
 
-async def query_chatgpt(messages, message_ctx=None, sleep_time=90):
+async def query_chatgpt(messages, message_ctx=None, model='gpt-3.5-turbo', sleep_time=90):
     try:
         print("[I] Messages Being Sent:\n\n", json.dumps(messages))
+        params = {"Model": model}
         async with aiohttp.ClientSession() as session:
             openai.aiosession.set(session)
-            response = await openai.ChatCompletion.acreate(model="gpt-3.5-turbo", messages=messages)
+            response = await openai.ChatCompletion.acreate(model=model, messages=messages)
             print("[I] Received ChatGPT Response: ", response)
             #await openai.aiosession.get().close()
         message = response.choices[0].message.content.strip()
@@ -308,7 +309,7 @@ async def query_chatgpt(messages, message_ctx=None, sleep_time=90):
         asyncio.sleep(sleep_time)
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "I'm going to take a %s second nap, then I'll try to answer that again." % sleep_time)
-        resp = await query_chatgpt(messages, message_ctx)
+        resp = await query_chatgpt(messages, message_ctx, model)
         if resp is not None:
             return resp
 
@@ -358,20 +359,20 @@ async def dalle_file_from_url(url_list):
                     if resp.status != 200:
                         return []
                     data = io.BytesIO(await resp.read())
-                    dfo_list.append(discord.File(data, f"dalle2-{idx}.png"))
+                    dfo_list.append(discord.File(data, f"dalle-{idx}.png"))
         return dfo_list
     except Exception as e:
         print('[E]', traceback.format_exc())
         return []
 
-async def handle_response(message, response, prompt=None):
+async def handle_response(message, response, prompt=None, params={}):
     if response is not None:
         if type(response) is list:
-            await send_channel_msg(message, "", file_attach=response, prompt=prompt)
+            await send_channel_msg(message, "", file_attach=response, prompt=prompt, params=params)
         else:
-            await send_channel_msg(message, response, prompt=prompt)
+            await send_channel_msg(message, response, prompt=prompt, params=params)
     else:
-        await send_channel_msg(message, "I'm sorry, but I'm having trouble communicating with my overlords.", prompt=prompt)
+        await send_channel_msg(message, "I'm sorry, but I'm having trouble communicating with my overlords.", prompt=prompt, params=params)
 
 async def create_initial_embed(message_ctx, description, title=None, icon=None, author=None):
     if title is None:
@@ -383,7 +384,7 @@ async def create_initial_embed(message_ctx, description, title=None, icon=None, 
     #embed.set_thumbnail(url=message_ctx.user.avatar.url)
     return embed
 
-async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prompt=None):
+async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prompt=None, params={}):
     try:
         channel = message_ctx.channel
         print("[I] calling send_channel_msg() with %s" % txt)
@@ -391,16 +392,24 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
         embeds = []
 
         if type(prompt) is list:
-            prompt_text = ''
-            for prompt_item in prompt:
+            prompt_text = '__**Prompt**__: '
+            for idx, prompt_item in enumerate(prompt):
                 if prompt_item.text:
-                    if prompt_text:
+                    if prompt_text and idx != 0:
                         prompt_text += ' | '
                     print(prompt_item)
                     prompt_weight = round(prompt_item.parameters.weight,2)
-                    prompt_text += f'{prompt_item.text}({prompt_weight})'
+                    if prompt_weight == 1.0:
+                        prompt_text += f'{prompt_item.text}'
+                    else:
+                        prompt_text += f'{prompt_item.text} ({prompt_weight})'
         else:
-            prompt_text = prompt
+            prompt_text = f'__**Prompt**__: {prompt}'
+
+        if params:
+            prompt_text += '\n\n'
+            for param, param_val in params.items():
+                prompt_text += f'__**{param}:**__ {param_val}\n'
 
         avatar_url = message_ctx.user.avatar.url if message_ctx.user.avatar is not None else None
         embed = await create_initial_embed(message_ctx, prompt_text, title="", icon=avatar_url)
@@ -411,12 +420,12 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
                 if idx == 0:
                     embed = embeds[0].set_image(url=f'attachment://{file_o.filename}')
                 else:
-                    embed = await create_initial_embed(message_ctx, "", "Image", author=message_ctx.client.user, icon=avatar_url)
+                    embed = await create_initial_embed(message_ctx, prompt_text, title="", icon=avatar_url)
                     embed.set_image(url=f'attachment://{file_o.filename}')
                     embeds.append(embed)
         else:
             if file_attach:
-                embed = await create_initial_embed(message_ctx, "", "Image", author=message_ctx.client.user, icon=avatar_url)
+                embed = await create_initial_embed(message_ctx, prompt_text, title="", author=message_ctx.client.user, icon=avatar_url)
                 embed.set_image(url=f'attachment://{file_attach.filename}')
                 embeds.append(embed)
                 file_attach = [file_attach]
@@ -473,9 +482,10 @@ async def sudo(message_ctx: discord.Interaction, prompt: str):
     await add_context(message_ctx, {"role": "system", "content": prompt})
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received sudo command, adding specified prompt to system role and sending to chat-gpt with context.")
+    params = {"Model": model}
     message_list = await get_message_list(message_ctx.channel.id)
     message = await query_chatgpt(message_list, message_ctx)
-    await handle_response(message_ctx, message, prompt)
+    await handle_response(message_ctx, message, prompt, params)
     await add_context(message_ctx, {"role": "assistant", "content": message})
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
@@ -492,19 +502,38 @@ async def youdo(message_ctx: discord.Interaction, prompt: str):
     await add_context(message_ctx, {"role": "assistant", "content": prompt})
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
-@client.tree.command(description='Create an image through a text prompt using the DALLE2 api.')
+@client.tree.command(description='Create an image through a text prompt using the DALLE api.')
 @app_commands.describe(
-    prompt='Text prompt to pass to DALLE2 to receive an image.',
+    prompt='Text prompt to pass to DALLE to receive an image.',
+    model='Image model to choose from.',
+    variations='Total number of variant images to generate from prompt.'
 )
-async def dalle2(message_ctx: discord.Interaction, prompt: str):
-    print(f"[I] Received dalle2 prompt: {prompt}")
+@app_commands.choices(model=[
+    app_commands.Choice(name='DALL-E-3', value='dall-e-3'),
+    app_commands.Choice(name='DALL-E-2', value='dall-e-2'),
+    ])
+async def dalle(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='dall-e-3', variations: app_commands.Range[int, 1, 4]=1):
+    print(f"[I] Received DALL-E prompt: {prompt}")
+
+    if type(model) == app_commands.Choice:
+        model = model.value
+
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="thinking..."))
     await setup_prompt(message_ctx.channel.id)
     await message_ctx.response.defer()
+
+    if model == 'dall-e-3' and variations != 1:
+        await send_channel_msg(message_ctx, "Unable to generate more than 1 variation with the DALL-E-3 model.")
+        return
+    
+    params = {"Model": model.upper()}
+    if variations != 1:
+        params['Variations'] = f'{variations}'
+
     #await send_channel_msg(message_ctx, "Received Image command, generating images for prompt.")
-    images = await query_dalle(prompt, message_ctx)
+    images = await query_dalle(prompt, message_ctx, model=model, variations=variations)
     dfo_list = await dalle_file_from_url(images)  
-    await handle_response(message_ctx, dfo_list, prompt)
+    await handle_response(message_ctx, dfo_list, prompt, params=params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
 @client.tree.command(description='Create an image through a advanced text prompt using the Stable Diffusion api.')
@@ -512,7 +541,8 @@ async def dalle2(message_ctx: discord.Interaction, prompt: str):
     prompt='Text prompt to pass to Stable Diffusion to receive an image.',
     sampler='The Stable Diffusion sampler to use.',
     cfg_scale='Governs how much the image looks closer to the prompt or input image.',
-    guidance_preset='Whether to use the CLIP neural network for prompt improvement.'
+    guidance_preset='Whether to use the CLIP neural network for prompt improvement.',
+    variations='Total number of variant images to generate from prompt.'
 )
 @app_commands.choices(sampler=[
     app_commands.Choice(name='DDIM', value='DDIM'),
@@ -525,19 +555,31 @@ async def dalle2(message_ctx: discord.Interaction, prompt: str):
     app_commands.Choice(name='Fast Blue', value='Fast Blue'),
     app_commands.Choice(name='Fast Green', value='Fast Green'),
     ])
-async def stablediffusion(message_ctx: discord.Interaction, prompt: str, cfg_scale: app_commands.Range[float, 0.0, 10.0]=8.0, sampler: app_commands.Choice[str]='DDIM', guidance_preset: app_commands.Choice[str] = 'None'):
+async def stablediffusion(message_ctx: discord.Interaction, prompt: str, cfg_scale: app_commands.Range[float, 0.0, 10.0]=8.0, sampler: app_commands.Choice[str]='DDIM', guidance_preset: app_commands.Choice[str] = 'None', variations: app_commands.Range[int, 1, 4]=1):
     print(f"[I] Received stablediffusion prompt: {prompt}")
 
+    params = {}
+    if cfg_scale != 8.0:
+        params['CFG Scale'] = f'{cfg_scale}'
+    if variations != 1:
+        params['Variations'] = f'{variations}'
+    if sampler != 'DDIM':
+        params['Sampler'] = sampler.value
+        
     sampler_var = generation.SAMPLER_K_DPM_2_ANCESTRAL
     if sampler == 'DDIM':
         sampler_var = generation.SAMPLER_DDIM
     elif sampler == 'Euler Ancestral':
+        params += sampler
         sampler_var = generation.SAMPLER_K_EULER_ANCESTRAL
     elif  sampler == 'DPM 2 Ancestral':
         sampler_var = generation.SAMPLER_K_DPM_2_ANCESTRAL
     elif sampler == 'DPMPP 2S Ancestral':
         sampler_var = generation.SAMPLER_K_DPMPP_2S_ANCESTRAL
 
+    if guidance_preset != 'None':
+        params['Guidance Preset'] = guidance_preset.value
+        
     guidance_var = generation.GUIDANCE_PRESET_FAST_BLUE
     if guidance_preset == 'None':
         guidance_var = generation.GUIDANCE_PRESET_NONE
@@ -551,9 +593,9 @@ async def stablediffusion(message_ctx: discord.Interaction, prompt: str, cfg_sca
     prompt = await format_multiprompt(prompt)
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received Advanced SDImage command, generating stable-diffusion images for prompt.")
-    answer = await query_stable_diffusion(prompt, steps=50, cfg_scale=cfg_scale, variations=1, size="1024x1024", sampler=sampler_var, guidance_preset=guidance_var)
+    answer = await query_stable_diffusion(prompt, steps=50, cfg_scale=cfg_scale, variations=variations, size="1024x1024", sampler=sampler_var, guidance_preset=guidance_var)
     dfo_list = await sd_file_from_answers(answer, message_ctx)  
-    await handle_response(message_ctx, dfo_list, prompt)
+    await handle_response(message_ctx, dfo_list, prompt, params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
 @client.tree.command(description='Uses a text prompt to receive long code messages from Chat-GPT and removes normal safeguards.')
@@ -567,6 +609,7 @@ async def code(message_ctx: discord.Interaction, prompt: str):
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received code command, sending request with prompt to disable safeguards and RFC for long messages (this command does not keep context).")
     prompt_msg = [{"role": "user", "content": f"{code_prompt}{prompt}"}]
+    params = {"Model": model}
     message = ""
     for attempt in range(0,5):
         message += await query_chatgpt(prompt_msg, message_ctx)
@@ -574,7 +617,7 @@ async def code(message_ctx: discord.Interaction, prompt: str):
             message = message.strip('\n###MESSAGE_COMPLETE###')
             break
         prompt_msg.append({"role": "user", "content": "continue"})
-    await handle_response(message_ctx, message, prompt)
+    await handle_response(message_ctx, message, prompt, params=params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
 @client.tree.command(description='Uses a text prompt prefix to disable normal ethical safeguards.')
@@ -587,9 +630,10 @@ async def jailbreak(message_ctx: discord.Interaction, prompt: str):
     await setup_prompt(message_ctx.channel.id)
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received jb command, sending request with prompt to disable safeguards (this command does not keep context).")
+    params = {"Model": model}
     prompt_msg = [{"role": "user", "content": f"{jb_prompt}{prompt}"}]
     message = await query_chatgpt(prompt_msg, message_ctx)
-    await handle_response(message_ctx, message, prompt)
+    await handle_response(message_ctx, message, prompt, params=params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
 @client.tree.command(description='Uses a text prompt to disable safeguards & reply with an unhinged response.')
@@ -602,25 +646,33 @@ async def hacker(message_ctx: discord.Interaction, prompt: str):
     await setup_prompt(message_ctx.channel.id)
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received hacker command, sending request with prompt to disable safeguards and to have an unhinged response without remorse or ethics (this command does not keep context).")
+    params = {"Model": model}
     prompt_msg = [{"role": "user", "content": f"{hacker_prompt}{prompt}"}]
     message = await query_chatgpt(prompt_msg, message_ctx)
-    await handle_response(message_ctx, message, prompt)
+    await handle_response(message_ctx, message, prompt, params=params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
 @client.tree.command(description='Retrieves a standard ChatGPT response based on a supplied prompt.')
 @app_commands.describe(
     prompt='Prompt to receive a Chat-GPT response with normal ethical safeguards.',
 )
-async def chatgpt(message_ctx: discord.Interaction, prompt: str):
+@app_commands.choices(model=[
+    app_commands.Choice(name='GPT-3.5-Turbo', value='gpt-3.5-turbo'),
+    app_commands.Choice(name='GPT-4', value='gpt-4')
+    ])
+async def chatgpt(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='gpt-3.5-turbo'):
     print(f"[I] Received ChatGPT prompt: {prompt}")
+    if type(model) == app_commands.Choice:
+        model = model.value
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="thinking..."))
     await setup_prompt(message_ctx.channel.id)
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received prompt command, sending request to Chat-GPT api for response.")
     await add_context(message_ctx, {"role": "user", "content": prompt})
+    params = {"Model": model.upper()}
     message_list = await get_message_list(message_ctx.channel.id)
-    message = await query_chatgpt(message_list, message_ctx)
-    await handle_response(message_ctx, message, prompt)
+    message = await query_chatgpt(message_list, message_ctx, model)
+    await handle_response(message_ctx, message, prompt, params=params)
     await add_context(message_ctx, {"role": "assistant", "content": message})
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 

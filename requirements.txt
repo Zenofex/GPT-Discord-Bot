@@ -1,6 +1,7 @@
 discord
-openai
+openai==0.28.1
 aiosqlite
 tiktoken
 python-dotenv
 aiohttp
+stability-sdk

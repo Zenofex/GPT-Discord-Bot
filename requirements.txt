@@ -1,5 +1,5 @@
 discord
-openai==0.28.1
+openai
 aiosqlite
 tiktoken
 python-dotenv

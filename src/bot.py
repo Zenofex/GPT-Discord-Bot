@@ -9,6 +9,7 @@ import aiosqlite
 import traceback
 import typing
 import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
+from PIL import Image
 from stability_sdk import client as stability_client
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -20,11 +21,10 @@ import json
 import sys
 
 load_dotenv()
-openai.api_key = os.getenv('OPENAI_API_KEY')
 discord_token = os.getenv('DISCORD_TOKEN')
 guild_id = os.getenv('GUILD_ID')
 
-# Set up our connection to the API.
+# Set up our connection to the Stability API.
 stability_api = stability_client.StabilityInference(
     key=os.getenv('STABILITY_KEY'),  # API Key reference.
     verbose=True,  # Print debug messages.
@@ -66,6 +66,26 @@ intents.members = True  # Enable the privileged intent to receive member events
 intents.messages = True
 client = DiscordBot(intents=intents, heartbeat_timeout=35)
 
+async def convert_image_format_async(image_bytes):
+    loop = asyncio.get_event_loop()
+
+    # This function now returns bytes directly
+    def convert_to_rgba():
+        with io.BytesIO(image_bytes) as image_file:
+            with Image.open(image_file) as img:
+                try:
+                    # Convert the image to 'RGBA'
+                    rgba_image = img.convert("RGBA")
+
+                    # Save to BytesIO object
+                    output_stream = io.BytesIO()
+                    rgba_image.save(output_stream, format="PNG")
+                    return output_stream.getvalue()  # Return bytes
+                except Exception as e:
+                    return None
+
+    return await loop.run_in_executor(None, convert_to_rgba)
+
 def to_thread(func: typing.Callable) -> typing.Coroutine:
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -91,6 +111,9 @@ async def setup_prompt(channel_thread, summary=None):
     elif local_summary:
         print("[I] Reading summary from summary file")
         print("[I] Summary:", local_summary)
+        if local_summary in message_list:
+            print("[I] Local summary already in message_context, skipping adding summary.")
+            return 
         message_list.append({"role": "system", "content": local_summary})
 
 async def read_summary_from_disk(thread_channel):
@@ -132,7 +155,7 @@ async def create_database(db_path):
         await conn.commit()
 
 #handle rotating and keeping message context
-async def add_context(message_ctx, message):
+async def add_context(message_ctx, message, fallback=True):
     thread_channel = message_ctx.channel.id
     channel = message_ctx.channel
     message_list = await get_message_list(thread_channel)
@@ -142,12 +165,20 @@ async def add_context(message_ctx, message):
         #prompt = "Summarize this conversation in a single paragraph."
         prompt = "summarize the facts learned in this conversation as an unordered list while identifying yourself as chatgpt."
         message_list.append({"role": "user", "content": prompt})
-        query_resp = await query_chatgpt(message_list)
-        print("[I] Summary message:", query_resp)
-        if query_resp is None:
-            return
-        await write_summary_to_disk(thread_channel, query_resp)
-        await setup_prompt(thread_channel, query_resp)
+        summary = await query_chatgpt(message_list)
+        if summary is None:
+            print("[E] Could not get summary of conversation. The query response was: \n", summary)
+            if fallback is True:
+                print("[I] Could not get summary of conversation but falling back to previous summary.")
+                summary = await read_summary_from_disk(thread_channel)
+            else:
+                print("[E] Could not get summary of conversation and no fallback allowed, returning.")
+                return
+        else:
+            await write_summary_to_disk(thread_channel, summary)
+        print("[I] Summary message:", summary)
+        # passing summary clears previous message_list
+        await setup_prompt(thread_channel, summary)
     message_list.append(message)
     print("[I] Dumping messsage_list_dict: ", message_list_dict)
     return message_list
@@ -218,13 +249,14 @@ async def parse_parenthesis(paren_token, weights):
         ret_token = ret_token.replace(full_match, text_token)
     return ret_token, weights
 
+
 async def format_multiprompt(prompt):
     weights= {}
     prompt_list = []
     multiprompt = []
     prompt = prompt.replace('"', '').replace("'", "")
     split_prompt = prompt.split('|')
-    pattern = r'\((?:[^()]+|\((?:[^()]+)\))*\)(?:(?:[-+]+)\d+\.\d+|[+-]+)?|\w+(?:(?:[-+]+)\d+\.\d+|[+-]+)?'
+    pattern = r'\((?:[^()]+|\((?:[^()]+)\))*\)(?:(?:[-+]+)?\d+(?:\.\d+)?|[+-]+)?|[^\s]+(?:(?:[-+]+)\d+(?:\.\d+)?|[+-]+)?'
     for item in split_prompt:
         tokens = re.findall(pattern, item)
         ret_tokens = []
@@ -248,21 +280,39 @@ async def format_multiprompt(prompt):
     
     return multiprompt
 
-async def query_dalle(prompt, message_ctx=None, model='dall-e-3', sleep_time=90, variations=1, size="1024x1024"):
+async def query_dalle(prompt, message_ctx=None, model='dall-e-3', sleep_time=90, variations=1, size="1024x1024", source_image=None, mask_image=None):
     try:
-        async with aiohttp.ClientSession() as session:
-            openai.aiosession.set(session)
+        async with openai.AsyncOpenAI(api_key = os.getenv('OPENAI_API_KEY')) as client:
             print("[I] Sending DALL-E prompt: ", prompt)
-            response = await openai.Image.acreate(model=model, prompt=prompt, n=variations, size=size)
+
+            if source_image is not None:
+                source_image_fh = await source_image.to_file()
+                source_image_buf_rgb = source_image_fh.fp.read()
+                source_image_buf = await convert_image_format_async(source_image_buf_rgb)
+                if source_image_buf is None:
+                    await send_channel_msg(message_ctx, "Error: ```Could not convert uploaded image.```", prompt=prompt)
+                    return None
+                if mask_image is not None:
+                    mask_image_fh = await mask_image.to_file()
+                    mask_image_buf_rgb = mask_image_fh.fp.read()
+                    mask_image_buf = await convert_image_format_async(mask_image_buf_rgb)
+                    if mask_image_buf is None:
+                        await send_channel_msg(message_ctx, "Error: ```Could not convert uploaded mask image.```", prompt=prompt)
+                        return None
+                if mask_image is not None:
+                    response = await client.images.edit(image=source_image_buf, mask=mask_image_buf, prompt=prompt, n=variations, size=size)
+                else:
+                    response = await client.images.edit(image=source_image_buf, prompt=prompt, n=variations, size=size)
+            else:
+                response = await client.images.generate(model=model, prompt=prompt, n=variations, size=size)
             print("[I] Received DALL-E Response: ", response)
-            #await openai.aiosession.get().close()
-        if 'data' not in response or len(response['data']) <= 0:
+        if not response or not hasattr(response, 'data'):
             await send_channel_msg(message_ctx, "Error: Invalid data received from API.", prompt=prompt)
             return None
         print("[I] Dall-E Response: %s" % response)
-        images = [img['url'] if 'url' in img else "" for img in response['data']]
+        images = [img.url if hasattr(img, 'url') else "" for img in response.data]
         return images
-    except openai.error.InvalidRequestError as e:
+    except openai.BadRequestError as e:
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "Error: ```%s```" % e, prompt=prompt)
         print('[E]', traceback.format_exc())
@@ -277,7 +327,7 @@ async def query_dalle(prompt, message_ctx=None, model='dall-e-3', sleep_time=90,
         asyncio.sleep(sleep_time)
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "I'm going to take a %s second nap, then I'll try to answer that again." % sleep_time, prompt=prompt)
-        resp = await query_dalle(prompt, message_ctx, model=model, variations=variations)
+        resp = await query_dalle(prompt, message_ctx, model=model, variations=variations, sleep_time=sleep_time, size=size, source_image=source_image, mask_image=mask_image)
         if resp is not None:
             return resp
 
@@ -285,14 +335,12 @@ async def query_chatgpt(messages, message_ctx=None, model='gpt-3.5-turbo', sleep
     try:
         print("[I] Messages Being Sent:\n\n", json.dumps(messages))
         params = {"Model": model}
-        async with aiohttp.ClientSession() as session:
-            openai.aiosession.set(session)
-            response = await openai.ChatCompletion.acreate(model=model, messages=messages)
+        async with openai.AsyncOpenAI(api_key = os.getenv('OPENAI_API_KEY')) as client:
+            response = await client.chat.completions.create(model=model, messages=messages)
             print("[I] Received ChatGPT Response: ", response)
-            #await openai.aiosession.get().close()
         message = response.choices[0].message.content.strip()
         return message
-    except openai.error.InvalidRequestError as e:
+    except openai.BadRequestError as e:
         if message_ctx is not None:
             if type(messages) is list and 'content' in messages[-1]:
                 prompt = messages[-1]['content']
@@ -395,6 +443,7 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
         max_size = 2000
         embeds = []
         prompt_text = None
+        param_embeds = {}
 
         if type(prompt) is list:
             prompt_text = '__**Prompt**__: '
@@ -414,16 +463,26 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
         if params and prompt:
             prompt_text += '\n\n'
             for param, param_val in params.items():
-                prompt_text += f'__**{param}:**__ {param_val}\n'
+                if type(param_val) is str:
+                    prompt_text += f'__**{param}:**__ {param_val}\n'
+                else:
+                    param_embeds[param] = param_val
 
         avatar_url = message_ctx.user.avatar.url if message_ctx.user.avatar is not None else None
+        if param_embeds:
+            for param, param_val in param_embeds.items():
+                embed = await create_initial_embed(message_ctx, f'{prompt_text}\n__**{param}**__\n', title="", icon=avatar_url)
+                #discord.File(param_val, f"{param}.png")
+                embed.set_image(url=param_val)
+                embeds.append(embed)
+        
         embed = await create_initial_embed(message_ctx, prompt_text, title="", icon=avatar_url)
         embeds.append(embed)
 
         if type(file_attach) is list:
             for idx, file_o in enumerate(file_attach):
                 if idx == 0:
-                    embed = embeds[0].set_image(url=f'attachment://{file_o.filename}')
+                    embed = embeds[-1].set_image(url=f'attachment://{file_o.filename}')
                 else:
                     embed = await create_initial_embed(message_ctx, prompt_text, title="", icon=avatar_url)
                     embed.set_image(url=f'attachment://{file_o.filename}')
@@ -519,32 +578,45 @@ async def youdo(message_ctx: discord.Interaction, prompt: str):
 @app_commands.describe(
     prompt='Text prompt to pass to DALLE to receive an image.',
     model='Image model to choose from.',
-    variations='Total number of variant images to generate from prompt.'
+    variations='Total number of variant images to generate from prompt.',
+    source_image='A optional source image to be used alongside the prompt.',
+    mask_image='Used to specify the area that should be modified by the prompt.'
 )
 @app_commands.choices(model=[
     app_commands.Choice(name='DALL-E-3', value='dall-e-3'),
     app_commands.Choice(name='DALL-E-2', value='dall-e-2'),
     ])
-async def dalle(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='dall-e-3', variations: app_commands.Range[int, 1, 4]=1):
+async def dalle(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='dall-e-3', variations: app_commands.Range[int, 1, 4]=1, source_image: discord.Attachment=None, mask_image: discord.Attachment=None):
     print(f"[I] Received DALL-E prompt: {prompt}")
 
     if type(model) == app_commands.Choice:
         model = model.value
 
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="thinking..."))
-    await setup_prompt(message_ctx.channel.id)
     await message_ctx.response.defer()
+   
+    if not source_image and mask_image:
+        await send_channel_msg(message_ctx, "Must supply a source image when providing a mask_image.", prompt=prompt)
+        return
 
     if model == 'dall-e-3' and variations != 1:
         await send_channel_msg(message_ctx, "Unable to generate more than 1 variation with the DALL-E-3 model.", prompt=prompt)
         return
     
-    params = {"Model": model.upper()}
+    params = {'Model': model.upper()}
     if variations != 1:
         params['Variations'] = f'{variations}'
 
     #await send_channel_msg(message_ctx, "Received Image command, generating images for prompt.")
-    images = await query_dalle(prompt, message_ctx, model=model, variations=variations)
+    if source_image:
+        params['Source-Image'] = source_image
+        if mask_image:
+            params['Mask-Image'] = mask_image
+
+        images = await query_dalle(prompt, message_ctx, model=model, variations=variations, source_image=source_image, mask_image=mask_image)
+    else:
+        images = await query_dalle(prompt, message_ctx, model=model, variations=variations)
+
     if not images:
         await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
         return
@@ -605,7 +677,6 @@ async def stablediffusion(message_ctx: discord.Interaction, prompt: str, cfg_sca
         guidance_var = generation.GUIDANCE_PRESET_FAST_GREEN
 
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="thinking..."))
-    await setup_prompt(message_ctx.channel.id)
     prompt = await format_multiprompt(prompt)
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received Advanced SDImage command, generating stable-diffusion images for prompt.")

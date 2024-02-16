@@ -155,11 +155,11 @@ async def create_database(db_path):
         await conn.commit()
 
 #handle rotating and keeping message context
-async def add_context(message_ctx, message, fallback=True):
+async def add_context(message_ctx, message, model='gpt-3.5-turbo', fallback=True):
     thread_channel = message_ctx.channel.id
     channel = message_ctx.channel
     message_list = await get_message_list(thread_channel)
-    num_tokens = await num_tokens_from_messages(message_list)
+    num_tokens = await num_tokens_from_messages(message_list, model=model)
     print("[I] Number of Tokens: ", num_tokens)
     if num_tokens > 3400:
         #prompt = "Summarize this conversation in a single paragraph."
@@ -178,6 +178,8 @@ async def add_context(message_ctx, message, fallback=True):
             await write_summary_to_disk(thread_channel, summary)
         print("[I] Summary message:", summary)
         # passing summary clears previous message_list
+        if summary is None:
+            summary = ""
         await setup_prompt(thread_channel, summary)
     message_list.append(message)
     print("[I] Dumping messsage_list_dict: ", message_list_dict)
@@ -342,6 +344,7 @@ async def query_chatgpt(messages, message_ctx=None, model='gpt-3.5-turbo', sleep
         return message
     except openai.BadRequestError as e:
         if message_ctx is not None:
+            print(messages)
             if type(messages) is list and 'content' in messages[-1]:
                 prompt = messages[-1]['content']
             else:
@@ -373,19 +376,18 @@ async def num_tokens_from_messages(messages, model="gpt-3.5-turbo"):
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
         encoding = tiktoken.get_encoding("cl100k_base")
-    if model == "gpt-3.5-turbo":  # note: future models may deviate from this
-        num_tokens = 0
-        for message in messages:
-            num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
-            for key, value in message.items():
+
+    num_tokens = 0
+    for message in messages:
+        num_tokens += 2  # For "role" and "content" keys
+        for key, value in message.items():
+            if isinstance(value, list):
+                for v in value:
+                    if isinstance(v, str):
+                        num_tokens += len(encoding.encode(v))
+            else:
                 num_tokens += len(encoding.encode(value))
-                if key == "name":  # if there's a name, the role is omitted
-                    num_tokens += -1  # role is always required and always 1 token
-        num_tokens += 2  # every reply is primed with <im_start>assistant
-        return num_tokens
-    else:
-        raise NotImplementedError(f"""num_tokens_from_messages() is not presently implemented for model {model}.
-See https://github.com/openai/openai-python/blob/main/chatml.md for information on how messages are converted to tokens.""")
+    return num_tokens
 
 async def sd_file_from_answers(prompt, answers, message_ctx):
     """Returns a list of discord file objects from a sd response."""
@@ -471,7 +473,7 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
         avatar_url = message_ctx.user.avatar.url if message_ctx.user.avatar is not None else None
         if param_embeds:
             for param, param_val in param_embeds.items():
-                embed = await create_initial_embed(message_ctx, f'{prompt_text}\n__**{param}**__\n', title="", icon=avatar_url)
+                embed = await create_initial_embed(message_ctx, f'{prompt_text}\n__**{param}**__\n', title="", author=message_ctx.client.user.name, icon=avatar_url)
                 #discord.File(param_val, f"{param}.png")
                 embed.set_image(url=param_val)
                 embeds.append(embed)
@@ -484,17 +486,23 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
                 if idx == 0:
                     embed = embeds[-1].set_image(url=f'attachment://{file_o.filename}')
                 else:
-                    embed = await create_initial_embed(message_ctx, prompt_text, title="", icon=avatar_url)
+                    embed = await create_initial_embed(message_ctx, prompt_text, title="", author=message_ctx.client.user.name, icon=avatar_url)
                     embed.set_image(url=f'attachment://{file_o.filename}')
                     embeds.append(embed)
         else:
             if file_attach:
-                embed = await create_initial_embed(message_ctx, prompt_text, title="", author=message_ctx.client.user, icon=avatar_url)
+                embed = await create_initial_embed(message_ctx, prompt_text, title="", author=message_ctx.client.user.name, icon=avatar_url)
                 embed.set_image(url=f'attachment://{file_attach.filename}')
                 embeds.append(embed)
                 file_attach = [file_attach]
-       
-        avatar_url = message_ctx.client.user.avatar.url if message_ctx.user.avatar is not None else None
+         
+        if message_ctx.client.user.avatar:
+            avatar_url = message_ctx.client.user.avatar.url
+        elif message_ctx.user.avatar:
+            avatar_url = message_ctx.user.avatar.url
+        else:
+            avatar_url = None
+
         if len(txt) > max_size:
             output_msg = ""
             quotes = False
@@ -504,7 +512,7 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
                         output_msg += "\n```"
 
                     if output_msg:
-                        embed = await create_initial_embed(message_ctx, output_msg, "", author=message_ctx.client.user, icon=avatar_url)
+                        embed = await create_initial_embed(message_ctx, output_msg, "", author=message_ctx.client.user.name, icon=avatar_url)
                         embeds.append(embed)
                         output_msg = ""
 
@@ -518,11 +526,11 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
 
                 output_msg += "%s" % line
             if output_msg:
-                embed = await create_initial_embed(message_ctx, output_msg, "", author=message_ctx.client.user, icon=avatar_url)
+                embed = await create_initial_embed(message_ctx, output_msg, "", author=message_ctx.client.user.name, icon=avatar_url)
                 embeds.append(embed)
         else:
             if txt:
-                embed = await create_initial_embed(message_ctx, txt, "", author=message_ctx.client.user, icon=avatar_url)
+                embed = await create_initial_embed(message_ctx, txt, "", author=message_ctx.client.user.name, icon=avatar_url)
                 embeds.append(embed)
 
         if not followup:
@@ -784,11 +792,12 @@ async def chatgpt(message_ctx: discord.Interaction, prompt: str, model: app_comm
     await setup_prompt(message_ctx.channel.id)
     await message_ctx.response.defer()
     #await send_channel_msg(message_ctx, "Received prompt command, sending request to Chat-GPT api for response.")
-    await add_context(message_ctx, {"role": "user", "content": prompt})
+    await add_context(message_ctx, {"role": "user", "content": prompt}, model=model)
     params = {"Model": model.upper()}
     message_list = await get_message_list(message_ctx.channel.id)
     message = await query_chatgpt(message_list, message_ctx, model)
     if not message:
+        added_msg = message_list.pop()
         await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
         return
     await handle_response(message_ctx, message, prompt, params=params)

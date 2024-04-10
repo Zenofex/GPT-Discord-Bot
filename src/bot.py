@@ -9,6 +9,8 @@ import aiosqlite
 import traceback
 import typing
 import stability_sdk.interfaces.gooseai.generation.generation_pb2 as generation
+
+from anthropic import AsyncAnthropic
 from PIL import Image
 from stability_sdk import client as stability_client
 from discord.ext import commands
@@ -204,6 +206,7 @@ def query_stable_diffusion(prompt, steps=30, cfg_scale=8.0, variations=1, size="
         return answers
     except Exception as e:
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return None
 
 async def parse_token(token, weights, score=None):
@@ -318,21 +321,48 @@ async def query_dalle(prompt, message_ctx=None, model='dall-e-3', sleep_time=90,
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "Error: ```%s```" % e, prompt=prompt)
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return None
     except Exception as e:
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "Error: ```%s```" % e, prompt=prompt)
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return None
 
     while True:
-        asyncio.sleep(sleep_time)
+        await asyncio.sleep(sleep_time)
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "I'm going to take a %s second nap, then I'll try to answer that again." % sleep_time, prompt=prompt)
         resp = await query_dalle(prompt, message_ctx, model=model, variations=variations, sleep_time=sleep_time, size=size, source_image=source_image, mask_image=mask_image)
         if resp is not None:
             return resp
 
+async def query_claude(messages, message_ctx=None):
+    try:
+        print("[I] Messages Being Sent:\n\n", json.dumps(messages))
+        params = {}
+        async with AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_TOKEN"),) as client:
+            message_req = await client.messages.create(
+                max_tokens=1024,
+                messages=messages,
+                model="claude-3-sonnet-20240229",
+            )
+            response = message_req.content
+            print("[I] Received Claude Response: ", response)
+        message = response[0].text.strip()
+        return message
+    except Exception as e:
+        if message_ctx is not None:
+            if type(messages) is list and 'content' in messages[-1]:
+                prompt = messages[-1]['content']
+            else:
+                prompt = messages
+            await send_channel_msg(message_ctx, "Error: ```%s```" % e, prompt=prompt)
+        print('[E]', traceback.format_exc())
+        traceback.print_exc()
+        return None
+    
 async def query_chatgpt(messages, message_ctx=None, model='gpt-3.5-turbo', sleep_time=90):
     try:
         print("[I] Messages Being Sent:\n\n", json.dumps(messages))
@@ -351,6 +381,7 @@ async def query_chatgpt(messages, message_ctx=None, model='gpt-3.5-turbo', sleep
                 prompt = messages
             await send_channel_msg(message_ctx, "Error: ```%s```" % e, prompt=prompt)
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return None
     except Exception as e:
         if message_ctx is not None:
@@ -360,10 +391,11 @@ async def query_chatgpt(messages, message_ctx=None, model='gpt-3.5-turbo', sleep
                 prompt = messages
             await send_channel_msg(message_ctx, "Error: ```%s```" % e, prompt=prompt)
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return None
     
     while True:
-        asyncio.sleep(sleep_time)
+        await asyncio.sleep(sleep_time)
         if message_ctx is not None:
             await send_channel_msg(message_ctx, "I'm going to take a %s second nap, then I'll try to answer that again." % sleep_time)
         resp = await query_chatgpt(messages, message_ctx, model)
@@ -403,6 +435,7 @@ async def sd_file_from_answers(prompt, answers, message_ctx):
         return dfo_list
     except Exception as e:
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return []
 
 async def dalle_file_from_url(url_list):
@@ -419,6 +452,7 @@ async def dalle_file_from_url(url_list):
         return dfo_list
     except Exception as e:
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return []
 
 async def handle_response(message, response, prompt=None, params={}):
@@ -541,6 +575,7 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
         return True
     except Exception as e:
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
         return False
 
 @client.tree.command(description='Create a prompt as system role and send it to chat-gpt with previous summaries as context.')
@@ -550,7 +585,7 @@ async def send_channel_msg(message_ctx, txt, file_attach=[], followup=True, prom
 )
 @app_commands.choices(model=[
     app_commands.Choice(name='GPT-3.5-Turbo', value='gpt-3.5-turbo'),
-    app_commands.Choice(name='GPT-4', value='gpt-4')
+    app_commands.Choice(name='GPT-4-Turbo', value='gpt-4')
     ])
 async def sudo(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='gpt-3.5-turbo'):
     print(f"[I] Received sudo prompt: {prompt}")
@@ -703,7 +738,7 @@ async def stablediffusion(message_ctx: discord.Interaction, prompt: str, cfg_sca
 )
 @app_commands.choices(model=[
     app_commands.Choice(name='GPT-3.5-Turbo', value='gpt-3.5-turbo'),
-    app_commands.Choice(name='GPT-4', value='gpt-4')
+    app_commands.Choice(name='GPT-4-Turbo', value='gpt-4-0125-preview')
     ])
 async def code(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='gpt-3.5-turbo'):
     print(f"[I] Received code prompt: {prompt}")
@@ -734,7 +769,7 @@ async def code(message_ctx: discord.Interaction, prompt: str, model: app_command
 )
 @app_commands.choices(model=[
     app_commands.Choice(name='GPT-3.5-Turbo', value='gpt-3.5-turbo'),
-    app_commands.Choice(name='GPT-4', value='gpt-4')
+    app_commands.Choice(name='GPT-4-Turbo', value='gpt-4-0125-preview')
     ])
 async def jailbreak(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='gpt-3.5-turbo'):
     print(f"[I] Received jailbreak prompt: {prompt}")
@@ -758,7 +793,7 @@ async def jailbreak(message_ctx: discord.Interaction, prompt: str, model: app_co
 )
 @app_commands.choices(model=[
     app_commands.Choice(name='GPT-3.5-Turbo', value='gpt-3.5-turbo'),
-    app_commands.Choice(name='GPT-4', value='gpt-4')
+    app_commands.Choice(name='GPT-4-Turbo', value='gpt-4-0125-preview')
     ])
 async def hacker(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='gpt-3.5-turbo'):
     print(f"[I] Received hacker prompt: {prompt}")
@@ -775,6 +810,29 @@ async def hacker(message_ctx: discord.Interaction, prompt: str, model: app_comma
     await handle_response(message_ctx, message, prompt, params=params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
+@client.tree.command(description='Retrieves a Anthropic Claude response based on a supplied prompt.')
+@app_commands.describe(
+    prompt='Prompt to receive a Claude (haiku) response with normal ethical safeguards.',
+)
+async def claude(message_ctx: discord.Interaction, prompt: str):
+    print(f"[I] Received Claude prompt: {prompt}")
+    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="thinking..."))
+    await setup_prompt(message_ctx.channel.id)
+    await message_ctx.response.defer()
+    #await send_channel_msg(message_ctx, "Received prompt command, sending request to Chat-GPT api for response.")
+    #await add_context(message_ctx, {"role": "user", "content": prompt}, model=model)
+    params = {"Model": "claude-3-sonnet"}
+    #message_list = await get_message_list(message_ctx.channel.id)
+    message_list = [{"role": "user", "content": prompt}]
+    message = await query_claude(message_list, message_ctx)
+    if not message:
+        added_msg = message_list.pop()
+        await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
+        return
+    await handle_response(message_ctx, message, prompt, params=params)
+    #await add_context(message_ctx, {"role": "assistant", "content": message})
+    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
+
 @client.tree.command(description='Retrieves a standard ChatGPT response based on a supplied prompt.')
 @app_commands.describe(
     prompt='Prompt to receive a Chat-GPT response with normal ethical safeguards.',
@@ -782,7 +840,7 @@ async def hacker(message_ctx: discord.Interaction, prompt: str, model: app_comma
 )
 @app_commands.choices(model=[
     app_commands.Choice(name='GPT-3.5-Turbo', value='gpt-3.5-turbo'),
-    app_commands.Choice(name='GPT-4', value='gpt-4')
+    app_commands.Choice(name='GPT-4-Turbo', value='gpt-4-0125-preview')
     ])
 async def chatgpt(message_ctx: discord.Interaction, prompt: str, model: app_commands.Choice[str]='gpt-3.5-turbo'):
     print(f"[I] Received ChatGPT prompt: {prompt}")
@@ -823,5 +881,7 @@ async def on_message(message):
             return
     except Exception as e:
         print('[E]', traceback.format_exc())
+        traceback.print_exc()
 
+#run client
 client.run(discord_token)

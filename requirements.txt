@@ -4,4 +4,5 @@ aiosqlite
 tiktoken
 python-dotenv
 aiohttp
+anthropic
 stability-sdk

@@ -6,3 +6,13 @@ python-dotenv
 aiohttp
 anthropic
 stability-sdk
+tensorflow
+torch
+invisible_watermark
+transformers
+accelerate
+safetensors
+peft
+k-diffusion
+git+https://github.com/kashif/diffusers.git@wuerstchen-v3
+diffusers

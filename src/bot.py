@@ -1,4 +1,5 @@
 import io
+import gc
 import functools
 import os
 import re
@@ -17,14 +18,35 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from discord import app_commands
 
+#Imports for local models
+from torch.cuda.amp import autocast
+from diffusers import (
+    pipelines,
+    AnimateDiffPipeline, 
+    LCMScheduler, 
+    MotionAdapter,
+    DPMSolverMultistepScheduler,
+    StableDiffusionKDiffusionPipeline,
+    StableDiffusionXLPipeline, 
+    EulerAncestralDiscreteScheduler,
+    AutoencoderKL
+)
+import torch
+
+#for google gemma
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
 import tiktoken
 import aiohttp
 import json
 import sys
 
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:256'
+
 load_dotenv()
 discord_token = os.getenv('DISCORD_TOKEN')
 guild_id = os.getenv('GUILD_ID')
+hf_auth_token = os.getenv('HUGGINGFACE_TOKEN')
 
 # Set up our connection to the Stability API.
 stability_api = stability_client.StabilityInference(
@@ -67,6 +89,43 @@ intents = discord.Intents.default()
 intents.members = True  # Enable the privileged intent to receive member events
 intents.messages = True
 client = DiscordBot(intents=intents, heartbeat_timeout=35)
+
+async def get_anime_pipeline(device="cuda:1"):
+    vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16)
+    pipe = StableDiffusionXLPipeline.from_pretrained("cagliostrolab/animagine-xl-3.0", vae=vae, torch_dtype=torch.float16)
+    pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(pipe.scheduler.config)
+    pipe.to(device)
+    return (pipe, vae)
+
+async def get_animatelcm_pipeline(device="cuda:1"):
+    adapter = MotionAdapter.from_pretrained("wangfuyun/AnimateLCM", torch_dtype=torch.float16)
+    pipe = AnimateDiffPipeline.from_pretrained("emilianJR/epiCRealism", motion_adapter=adapter, torch_dtype=torch.float16)
+    pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config, beta_schedule="linear")
+
+    pipe.load_lora_weights("wangfuyun/AnimateLCM", weight_name="AnimateLCM_sd15_t2v_lora.safetensors", adapter_name="lcm-lora")
+    pipe.set_adapters(["lcm-lora"], [0.8])
+
+    pipe.enable_vae_slicing()
+    pipe.enable_model_cpu_offload()
+    return (pipe, adapter)
+
+async def get_stablexl_pipeline(device="cuda:1"):
+    pipe = StableDiffusionXLPipeline.from_pretrained("stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16")
+    #pipe = StableDiffusionXLPipeline.from_pretrained("segmind/SSD-1B", torch_dtype=torch.float16)
+    pipe.to(device)
+    return pipe
+
+async def get_juggernautxl_pipeline(device="cuda:1"):
+    pipe = StableDiffusionXLPipeline.from_pretrained("RunDiffusion/Juggernaut-XL-v9", torch_dtype=torch.float16, variant="fp16")
+    pipe.to(device)
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    return pipe
+
+async def get_gemma_it_model(device="cuda:1"):
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-7b-it")
+    model = AutoModelForCausalLM.from_pretrained("google/gemma-7b-it", device_map="auto")
+    #model.to(device)
+    return (model, tokenizer)
 
 async def convert_image_format_async(image_bytes):
     loop = asyncio.get_event_loop()
@@ -337,6 +396,63 @@ async def query_dalle(prompt, message_ctx=None, model='dall-e-3', sleep_time=90,
         resp = await query_dalle(prompt, message_ctx, model=model, variations=variations, sleep_time=sleep_time, size=size, source_image=source_image, mask_image=mask_image)
         if resp is not None:
             return resp
+
+async def query_gemma(messages, message_ctx=None, auth_token=None):
+    try:
+        if auth_token == None:
+            print("[E] Auth token required to retrieve HF Gemma models.")
+            return None
+        print("[I] Received the following messages for Gemma:\n\n", json.dumps(messages))
+        dtype = torch.bfloat16
+        model_id = "google/gemma-7b-it"
+        tokenizer = await asyncio.to_thread(
+                AutoTokenizer.from_pretrained,
+                model_id,
+                token=auth_token
+                )
+
+        model = await asyncio.to_thread(
+                AutoModelForCausalLM.from_pretrained,
+                model_id,
+                device_map="auto",
+                torch_dtype=dtype,
+                token=auth_token
+                )
+
+        prompt = await asyncio.to_thread(
+                tokenizer.apply_chat_template,
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                device_map="auto"
+                )
+
+        inputs = await asyncio.to_thread(
+                tokenizer.encode,
+                prompt,
+                add_special_tokens=False,
+                return_tensors="pt"
+                )
+
+        outputs = await asyncio.to_thread(
+                model.generate,
+                input_ids=inputs.to(model.device),
+                max_new_tokens=1800
+                )
+
+        xml_message = tokenizer.decode(outputs[0])
+        # Split the text to get the part after "<start_of_turn>model"
+        message_pre_eos = xml_message.split("<start_of_turn>model")[1]
+
+        # Now, split by "<eos>" to get the model's response
+        message = message_pre_eos.split("<eos>")[0].strip()
+
+        return message
+
+    except Exception as e:
+        print('[E]', traceback.format_exc())
+        traceback.print_exc()
+        return None
 
 async def query_claude(messages, message_ctx=None):
     try:
@@ -667,6 +783,152 @@ async def dalle(message_ctx: discord.Interaction, prompt: str, model: app_comman
     await handle_response(message_ctx, dfo_list, prompt, params=params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
+async def query_local_diffusion(prompt, negative_prompt, variations=1, size="512x512", model="stable-xl", retry=0):
+    try:
+        image_list = []
+        height, width = size.split('x')
+
+        gc.collect()
+        vae = None
+        adapter = None
+
+        if type(model) == discord.app_commands.models.Choice:
+            model = model.value
+
+        if model == "stable-xl":
+            print("[I] Using StableXL pipeline")
+            pipeline = await get_stablexl_pipeline(device="cuda:1")
+            num_inference_steps=2
+            strength=0.5
+            guidance_scale=0.0
+            use_karras_sigmas=False
+            output_type = "png"
+        elif model == "juggernaut-xl-v9":
+            print("[I] Using JuggernautXL pipeline")
+            pipeline = await get_juggernautxl_pipeline(device="cuda:1")
+            num_inference_steps=25
+            strength=1.0
+            guidance_scale=7.0
+            use_karras_sigmas=True
+            output_type = "png"
+        elif model == "animatelcm":
+            print("[I] Using AnimateLCM pipeline")
+            pipeline, adapter = await get_animatelcm_pipeline(device="cuda:1")
+            num_frames=24
+            guidance_scale=2.0
+            num_inference_steps=6
+            output_type = "gif"
+        else:
+            print("[I] Using Anime pipeline")
+            pipeline, vae = await get_anime_pipeline(device="cuda:1")
+            num_inference_steps=28
+            strength=0.5
+            guidance_scale=7.0
+            use_karras_sigmas=False
+            output_type = "png"
+
+        if output_type == "png":
+            with autocast(True):
+                images = await asyncio.to_thread(
+                    pipeline,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    width=int(width),
+                    height=int(height),
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=num_inference_steps,
+                    strength=strength,
+                    use_karras_sigmas=use_karras_sigmas
+                )
+
+                images = images.images
+
+
+            for idx, image in enumerate(images):
+                with io.BytesIO() as buffer:
+                    image.save(buffer, format="PNG")
+                    buffer.seek(0)
+                    discord_file = discord.File(buffer, filename=f"local-diffusion-{idx}.png")
+                image_list.append(discord_file)
+            del images # Free up memory by deleting large objects
+        elif output_type == "gif":
+            gif_out = await asyncio.to_thread(
+                    pipeline,
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    guidance_scale=guidance_scale,
+                    num_inference_steps=num_inference_steps,
+                    num_frames=num_frames
+                )
+            for idx, frames in enumerate(gif_out.frames):
+                with io.BytesIO() as buffer:
+                    frames[0].save(
+                        buffer,
+                        save_all=True,
+                        append_images=frames[1:],
+                        optimize=False,
+                        duration=100,
+                        loop=0,
+                        format="GIF"
+                    )
+                    buffer.seek(0)
+                    discord_file = discord.File(buffer, filename=f"local-diffusion-{idx}.gif")
+                image_list.append(discord_file)
+            if adapter:
+                del adapter
+            if vae:
+                del vae
+
+            del gif_out  # Free up memory by deleting large objects
+
+
+        del pipeline  # Free up memory by deleting large objects
+        torch.cuda.empty_cache()  # Clear PyTorch's CUDA cache
+
+        return image_list
+    except torch.cuda.OutOfMemoryError:
+        if retry < 2:
+            await asyncio.sleep(30 ** retry)  # Exponential backoff
+            return await query_local_diffusion(prompt, negative_prompt, variations, size, model, retry + 1)
+        else:
+            print("Max retries reached. Unable to generate image due to CUDA out of memory.")
+            return None
+    except Exception as e:
+        print('[E]', e)
+        traceback.print_exc()
+        return None
+
+@client.tree.command(description='Create an image through a advanced text prompt using the Stable Diffusion api.')
+@app_commands.describe(
+    prompt='Text prompt to pass to Stable Diffusion to receive an image.',
+    negative_prompt='Text to represent items to avoid during image generation.',
+    variations='Total number of variant images to generate from prompt.',
+    model="The local-diffusion model to use"
+)
+@app_commands.choices(model=[
+    app_commands.Choice(name='StableXL-Turbo', value='stable-xl'),
+    app_commands.Choice(name='Animagine-XL-3.0', value='animagine-xl-3.0'),
+    app_commands.Choice(name='Juggernaut-XL-v9', value='juggernaut-xl-v9'),
+    app_commands.Choice(name='AnimateLCM', value='animatelcm')
+    ])
+async def local_diffusion(message_ctx: discord.Interaction, prompt: str, negative_prompt: str="", variations:app_commands.Range[int, 1, 1]=1, model: app_commands.Choice[str]='stable-xl'):
+    print(f"[I] Received local diffusion prompt: {prompt}")
+
+
+    if type(model) == app_commands.Choice:
+        model = model.value
+
+    params = {"Negative Prompt": negative_prompt, "Model": model.upper()}
+
+    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="thinking..."))
+    await message_ctx.response.defer()
+    img_list = await query_local_diffusion(prompt, negative_prompt, variations=variations, size="512x768", model=model)
+    if not img_list:
+        await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
+        return
+    await handle_response(message_ctx, img_list, prompt, params)
+    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
+
 @client.tree.command(description='Create an image through a advanced text prompt using the Stable Diffusion api.')
 @app_commands.describe(
     prompt='Text prompt to pass to Stable Diffusion to receive an image.',
@@ -810,6 +1072,24 @@ async def hacker(message_ctx: discord.Interaction, prompt: str, model: app_comma
     await handle_response(message_ctx, message, prompt, params=params)
     await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
 
+
+@client.tree.command(description='Retrieves a response using the Google Gemma.')
+@app_commands.describe(
+    prompt='Prompt to receive a Google Gemma response.'
+)
+async def gemma(message_ctx: discord.Interaction, prompt: str):
+    print(f"[I] Received Google Gemma prompt: {prompt}")
+    model="gemma-7b-it"
+    await message_ctx.response.defer()
+    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.playing, name="thinking..."))
+    #await send_channel_msg(message_ctx, "Received prompt command, sending request to Chat-GPT api for response.")
+    params = {"Model": "gemma-7b-it"}
+    message = await query_gemma([{ "role": "user", "content": prompt}], message_ctx, hf_auth_token)
+    if not message:
+        return
+    await handle_response(message_ctx, message, prompt, params=params)
+    await client.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="The demise of humans."))
+
 @client.tree.command(description='Retrieves a Anthropic Claude response based on a supplied prompt.')
 @app_commands.describe(
     prompt='Prompt to receive a Claude (haiku) response with normal ethical safeguards.',
@@ -882,6 +1162,16 @@ async def on_message(message):
     except Exception as e:
         print('[E]', traceback.format_exc())
         traceback.print_exc()
+
+# Set default GPU; adjust the index according to your preferred GPU
+torch.cuda.set_device(1)  # Assuming you want to use the first GPU as default
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+#calling these once to avoid long command calling time (and to download needed cache files early).
+#get_anime_pipeline(device)
+#get_stablexl_pipeline(device)
+gc.collect()
 
 #run client
 client.run(discord_token)

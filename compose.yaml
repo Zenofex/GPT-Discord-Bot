@@ -1,0 +1,57 @@
+version: "3.8"
+services:
+  mugatu:
+    image: mugatu-inference
+    build:
+      dockerfile: Dockerfile.mugatu
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            device_ids: ['0', '1']
+            capabilities: [gpu]
+    expose:
+      - "8888"
+      - "8080"
+    env_file:
+      - path: ./tokens.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HF_HUB_ENABLE_HF_TRANSFER=1
+    healthcheck:
+        test: curl -I http://mugatu:8080/ || exit 1
+        interval: 30s
+        timeout: 10s
+        retries: 20
+        start_period: 60s
+    volumes:
+      - "./cache/huggingface:/root/.cache/huggingface"
+    restart: always
+  modelbot:
+    image: modelbot
+    build:
+      dockerfile: Dockerfile
+    depends_on:
+      mugatu:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            device_ids: ['0', '1']
+            capabilities: [gpu]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SUMMARY_FILE=summary.sqlite3
+      # Discord bot token
+      #- DISCORD_TOKEN=
+      # Role of bot administrators 
+      #- BOT_ROLE=Admin
+      # Guild ID Number
+      #- GUILD_ID=
+    volumes:
+      - "./cache/huggingface:/root/.cache/huggingface"
+      - "./data:/data/"
+    restart: always

@@ -1,3 +1,5 @@
+#git+https://github.com/kashif/diffusers.git@wuerstchen-v3
+diffusers
 discord
 openai
 aiosqlite
@@ -14,5 +16,9 @@ accelerate
 safetensors
 peft
 k-diffusion
-git+https://github.com/kashif/diffusers.git@wuerstchen-v3
-diffusers
+pydantic
+accelerate
+gguf
+hf_transfer
+huggingface_hub[hf_transfer]
+transformers[sentencepiece]

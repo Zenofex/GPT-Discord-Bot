@@ -1,0 +1,17 @@
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install curl libgl1 git libglib2.0-0 python3 python3-pip -y
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip3 install -U -r requirements.txt --break-system-packages 
+
+COPY mugatu/ src/
+
+RUN mkdir -p /app/user_images/
+
+ENV CUDA_VISIBLE_DEVICES=0
+
+ENTRYPOINT ["accelerate", "launch", "/app/src/mugatu.py"]

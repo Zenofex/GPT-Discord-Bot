@@ -1,4 +1,6 @@
-FROM python:3.9-slim-buster
+FROM ubuntu:latest
+
+RUN apt-get update && apt-get install libgl1 git libglib2.0-0 python3 python3-pip -y
 
 WORKDIR /app
 
@@ -10,10 +12,10 @@ ENV OPENAI_API_KEY=<OPENAI_API_KEY>
 
 ENV SUMMARY_FILE=<SUMMARY_FILE>
 
-RUN pip install -r requirements.txt
+RUN pip3 install -r requirements.txt --break-system-packages
 
 VOLUME /app/data/
 
 COPY src/ /src/
 
-CMD ["python", "/src/bot.py"]
+CMD ["python3", "/src/bot.py"]

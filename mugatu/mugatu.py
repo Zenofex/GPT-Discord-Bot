@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import json
 import os
 import pydantic
@@ -140,9 +141,10 @@ class mugatu:
             writer.close()
             await writer.wait_closed()
 
-    async def start_server(self):
-        #pre-download model files to ensure a quicker query
-        await self.preload_models()
+    async def start_server(self, preload_models=False):
+        if preload_models:
+            #pre-download model files to ensure a quicker query
+            await self.preload_models()
         
         runner = web.AppRunner(self.app)
         await runner.setup()
@@ -290,7 +292,10 @@ class mugatu:
                   encoder = await self.get_encoder("madebyollin/sdxl-vae-fp16-fix")
 
                 if p_type != "Text2ImageLORA":
-                    pipeline = await self.get_pipeline(model_name, encoder)
+                    if model_name == 'stabilityai/sdxl-turbo':
+                        pipeline = await self.get_pipeline(model_name, encoder, variant="fp16")
+                    else:
+                        pipeline = await self.get_pipeline(model_name, encoder)
                 else:
 
                     if type(p_model) is list:
@@ -464,7 +469,7 @@ class mugatu:
                     if model_name == "stabilityai/stable-diffusion-3-medium-diffusers":
                         return StableDiffusion3Pipeline.from_pretrained(model_name, variant=variant, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
                     elif vae != None:
-                        return AutoPipelineForText2Image.from_pretrained(model_name, variant=variant, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
+                        return AutoPipelineForText2Image.from_pretrained(model_name, vae=vae, variant=variant, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
                     return AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.float16, variant=variant, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
                 elif p_type in ["Text2ImageLORA"]:
                     if vae != None:
@@ -527,9 +532,13 @@ class mugatu:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Mugatu model inference network service")
+    parser.add_argument("-p", "--preload_models", default=False, action="store_true", help="Preload models before starting webserver")   
+    args = parser.parse_args()
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     mugatu_server = mugatu(loop)
-    loop.run_until_complete(mugatu_server.start_server())
+    loop.run_until_complete(mugatu_server.start_server(args.preload_models))
     loop.run_forever()

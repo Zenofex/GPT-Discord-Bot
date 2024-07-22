@@ -1,5 +1,5 @@
-#git+https://github.com/kashif/diffusers.git@wuerstchen-v3
-diffusers
+git+https://github.com/huggingface/diffusers.git
+#diffusers
 discord
 openai
 aiosqlite

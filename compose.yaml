@@ -16,9 +16,6 @@ services:
       - "8080"
     env_file:
       - path: ./tokens.env
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HF_HUB_ENABLE_HF_TRANSFER=1
     healthcheck:
         test: curl -I http://mugatu:8080/ || exit 1
         interval: 30s
@@ -28,12 +25,34 @@ services:
     volumes:
       - "./cache/huggingface:/root/.cache/huggingface"
     restart: always
+  ollama:
+    image: ollama-server
+    build:
+      dockerfile: Dockerfile.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            device_ids: ['0', '1']
+            capabilities: [gpu]
+    expose:
+      - "11434"
+    healthcheck:
+        test: ollama --version && ollama ps || exit 1
+        interval: 30s
+        timeout: 10s
+        retries: 20
+        start_period: 60s
+    restart: always
   modelbot:
     image: modelbot
     build:
       dockerfile: Dockerfile
     depends_on:
       mugatu:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     deploy:
       resources:
@@ -42,15 +61,14 @@ services:
           - driver: nvidia
             device_ids: ['0', '1']
             capabilities: [gpu]
+    env_file:
+      - path: ./tokens.env
     environment:
       - PYTHONUNBUFFERED=1
-      - SUMMARY_FILE=summary.sqlite3
-      # Discord bot token
-      #- DISCORD_TOKEN=
-      # Role of bot administrators 
-      #- BOT_ROLE=Admin
-      # Guild ID Number
-      #- GUILD_ID=
+      - DISCORD_TOKEN=TOKEN_HERE # discord token here
+      - SUMMARY_FILE=summary.sqlite3 #summary file can be left as default
+      - BOT_ROLE=Admin # role here
+      - GUILD_ID=0 #guild id here
     volumes:
       - "./cache/huggingface:/root/.cache/huggingface"
       - "./data:/data/"

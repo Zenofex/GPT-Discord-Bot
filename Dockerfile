@@ -1,6 +1,6 @@
 FROM ubuntu:latest
 
-RUN apt-get update && apt-get install libgl1 git libglib2.0-0 python3 python3-pip -y
+RUN apt-get update && apt-get install curl libgl1 git libglib2.0-0 python3 python3-pip -y
 
 WORKDIR /app
 
@@ -18,4 +18,4 @@ VOLUME /app/data/
 
 COPY src/ /src/
 
-CMD ["python3", "/src/bot.py"]
+CMD python3 -u /src/bot.py

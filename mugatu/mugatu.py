@@ -16,7 +16,7 @@ from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 from diffusers import AutoPipelineForText2Image, AutoPipelineForImage2Image, AutoPipelineForInpainting, AutoencoderKL, DiffusionPipeline
 # Remove when AutoPipelineForText2Image adds SD3
 from diffusers import StableDiffusion3Pipeline
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 
 #logging.set_verbosity_error()
 
@@ -24,7 +24,7 @@ class mugatu:
     def __init__(self, loop=None):
         self.allowed_devices = [0, 1]
         self.allowed_models = {
-            "Text2Image": ["stabilityai/stable-diffusion-3-medium-diffusers", "stabilityai/sdxl-turbo", "cagliostrolab/animagine-xl-3.1", "RunDiffusion/Juggernaut-X-v10"],
+            "Text2Image": ["stabilityai/stable-diffusion-3-medium-diffusers", "stabilityai/stable-diffusion-3.5-medium", "stabilityai/sdxl-turbo", "cagliostrolab/animagine-xl-3.1", "RunDiffusion/Juggernaut-X-v10"],
             "Text2ImageLORA": [
                     ["stabilityai/stable-diffusion-xl-base-1.0", "bytedance/hyper-sd", "Hyper-SDXL-2steps-lora.safetensors", ""], 
                     ["stabilityai/stable-diffusion-xl-base-1.0", "ostris/ikea-instructions-lora-sdxl", "ikea_instructions_xl_v1_5.safetensors", ""],
@@ -44,7 +44,6 @@ class mugatu:
                     ["stabilityai/stable-diffusion-xl-base-1.0", "goofyai/cyborg_style_xl", "cyborg_style_xl-off.safetensors", "cyborg style"],
                     ["stabilityai/stable-diffusion-xl-base-1.0", "WizWhite/wizard-s-vintage-board-games", "Wizards_Vintage_Board_Game.safetensors", "Vintage board game box"],
                     ["stabilityai/stable-diffusion-xl-base-1.0", "KappaNeuro/studio-ghibli-style", "Studio Ghibli Style.safetensors", "Studio Ghibli Style"],
-                    ["stabilityai/stable-diffusion-xl-base-1.0", "artificialguybr/StickersRedmond", "StickersRedmond.safetensors", "Stickers"],
                 ],
             "Image2Image": [],
             "Inpainting": [],
@@ -211,9 +210,16 @@ class mugatu:
             negative_prompt = params.get("negative_prompt", "")
             width = params.get("width", 512)
             height = params.get("height", 512)
-            guidance_scale = params.get("guidance_scale", 0.0)
-            num_inference_steps = params.get("num_inference_steps", 2)
-            strength = params.get("strength", 0.5)
+            if '-turbo' in model:
+                guidance_scale = params.get("guidance_scale", 0.0)
+                num_inference_steps = params.get("num_inference_steps", 2)
+                strength = params.get("strength", 0.5)
+                print(f"[E] Using a guidance scale of {guidance_scale}, a num_inference_steps of {num_inference_steps}, and a strength of {strength}.")
+            else:
+                guidance_scale = params.get("guidance_scale", 7.5)
+                num_inference_steps = params.get("num_inference_steps", 30)
+                strength = params.get("strength", 1.0)
+                 
             encoder=None
             
             p_type, p_model = self.get_pipeline_info(model)
@@ -287,15 +293,18 @@ class mugatu:
                     model_name = p_model
 
                 print(f"[I] Model Name is {model_name}")
-                if model_name != 'stabilityai/stable-diffusion-3-medium-diffusers':
+                if model_name not in ['stabilityai/stable-diffusion-3-medium-diffusers', 'stabilityai/stable-diffusion-3.5-medium']:
                   # Get encoder (if needed) and pipeline / model (depending on type)
                   encoder = await self.get_encoder("madebyollin/sdxl-vae-fp16-fix")
 
                 if p_type != "Text2ImageLORA":
                     if model_name == 'stabilityai/sdxl-turbo':
+                        #no encoder?
                         pipeline = await self.get_pipeline(model_name, encoder, variant="fp16")
+                        pipeline.enable_model_cpu_offload()
                     else:
                         pipeline = await self.get_pipeline(model_name, encoder)
+                        pipeline.enable_model_cpu_offload()
                 else:
 
                     if type(p_model) is list:
@@ -329,8 +338,10 @@ class mugatu:
                     print(f"[E] Could not process job for model {model} with prompt {prompt}")
                     return {"status": "error", "message": "Pipeline retrieval failed."}
 
+                print("[I] Pipeline type is: ", type(pipeline))
+
                 # Get output
-                with autocast(True):
+                with autocast('cuda'):
                     print(f"[I] Running pipeline for prompt {prompt}")
                     if 'encoder' in locals() and encoder != None:
                         images = pipeline(
@@ -343,16 +354,27 @@ class mugatu:
                             num_inference_steps=num_inference_steps,
                             strength=strength
                             )
+
                     else:
-                        images = pipeline(
-                            prompt=prompt,
-                            negative_prompt=negative_prompt,
-                            width=width,
-                            height=height,
-                            guidance_scale=guidance_scale,
-                            num_inference_steps=num_inference_steps,
-                            #strength=strength
-                            )
+                        if model_name in ["stabilityai/stable-diffusion-3-medium-diffusers", "stabilityai/stable-diffusion-3.5-medium"]:
+                            images = pipeline(
+                                prompt=prompt,
+                                negative_prompt=negative_prompt,
+                                width=width,
+                                height=height,
+                                guidance_scale=guidance_scale,
+                                num_inference_steps=num_inference_steps,
+                                )
+                        else:
+                            images = pipeline(
+                                prompt=prompt,
+                                negative_prompt=negative_prompt,
+                                width=width,
+                                height=height,
+                                guidance_scale=guidance_scale,
+                                num_inference_steps=num_inference_steps,
+                                #strength=strength
+                                )
 
                     if 'encoder' in locals():
                         del encoder
@@ -466,8 +488,8 @@ class mugatu:
      
             if auto == True:
                 if p_type in ["Text2Image"]:
-                    if model_name == "stabilityai/stable-diffusion-3-medium-diffusers":
-                        return StableDiffusion3Pipeline.from_pretrained(model_name, variant=variant, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
+                    if model_name in ["stabilityai/stable-diffusion-3-medium-diffusers", "stabilityai/stable-diffusion-3.5-medium"]:
+                        return StableDiffusion3Pipeline.from_pretrained(model_name, variant=variant, text_encoder_3=None, tokenizer_3=None, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
                     elif vae != None:
                         return AutoPipelineForText2Image.from_pretrained(model_name, vae=vae, variant=variant, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
                     return AutoPipelineForText2Image.from_pretrained(model_name, torch_dtype=torch.float16, variant=variant, use_safetensors=safe_tensors, token=self.hf_token).to(self.distributed_state)
@@ -496,7 +518,7 @@ class mugatu:
             traceback.print_exc()
         return None
 
-    async def get_tokenizer(self, model, auto=True, safe_tensors=True):
+    async def get_tokenizer(self, model, auto=True, safe_tensors=True, add_prefix_space=False):
         print(f"[I] Attempting to get tokenizer for model {model}")
 
         try:
@@ -505,7 +527,7 @@ class mugatu:
                 return None
      
             if auto == True:
-                tokenizer = AutoTokenizer.from_pretrained(model, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token)
+                tokenizer = AutoTokenizer.from_pretrained(model, torch_dtype=torch.float16, use_safetensors=safe_tensors, token=self.hf_token, add_prefix_space=add_prefix_space)
                 return tokenizer
 
         except Exception as e:

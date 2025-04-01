@@ -92,6 +92,9 @@ intents.members = True  # Enable the privileged intent to receive member events
 intents.messages = True
 client = DiscordBot(intents=intents, heartbeat_timeout=60)
 
+# import commands
+import commands.localgpt
+
 async def send_job(prompt, params):
     reader, writer = await asyncio.open_connection('mugatu', 8888)
     job = {'prompt': prompt, 'params': params}
